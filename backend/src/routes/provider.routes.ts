@@ -7,10 +7,14 @@ import { v4 as uuidv4 } from 'uuid';
 const router = Router();
 
 // Get all providers for user
-router.get('/', (_req: Request, res: Response) => {
+router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
     const providers = db
       .prepare(`
@@ -37,7 +41,11 @@ router.get('/', (_req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   try {
     const { name, provider_type, model, api_key } = req.body;
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
     const db = getDatabase();
 
     if (!name || !provider_type) {

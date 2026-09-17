@@ -8,6 +8,7 @@ import authRoutes from './routes/auth.routes';
 import providerRoutes from './routes/provider.routes';
 import taskRoutes from './routes/task.routes';
 import errorHandler from './middleware/errorHandler';
+import { authMiddleware } from './middleware/auth.middleware';
 
 dotenv.config();
 
@@ -19,7 +20,7 @@ app.use(cors({
   origin: process.env.CORS_ORIGIN || 'http://localhost:5173',
   credentials: true,
 }));
-app.use(express.json());
+app.use(express.json({ limit: '1mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Request logging
@@ -39,11 +40,11 @@ app.use((req: Request, _res: Response, next: NextFunction) => {
   }
 })();
 
-// Routes
-app.use('/api/home', homeRoutes);
+// Routes — auth routes are public, all others require authentication
 app.use('/api/auth', authRoutes);
-app.use('/api/providers', providerRoutes);
-app.use('/api/tasks', taskRoutes);
+app.use('/api/home', authMiddleware, homeRoutes);
+app.use('/api/providers', authMiddleware, providerRoutes);
+app.use('/api/tasks', authMiddleware, taskRoutes);
 
 // Health check
 app.get('/api/health', (_req: Request, res: Response) => {
@@ -58,10 +59,24 @@ app.use((_req: Request, res: Response) => {
 // Error handler
 app.use(errorHandler);
 
+// Graceful shutdown
+process.on('SIGTERM', () => {
+  logger.info('SIGTERM received — shutting down gracefully');
+  const { closeDatabase } = require('./database');
+  closeDatabase();
+  process.exit(0);
+});
+
+process.on('SIGINT', () => {
+  logger.info('SIGINT received — shutting down gracefully');
+  const { closeDatabase } = require('./database');
+  closeDatabase();
+  process.exit(0);
+});
+
 // Start server
 app.listen(PORT, () => {
   logger.info(` Server running on http://localhost:${PORT}`);
-  logger.info(` API docs available at http://localhost:${PORT}/api/docs`);
 });
 
 export default app;

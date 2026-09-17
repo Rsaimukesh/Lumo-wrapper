@@ -3,8 +3,14 @@ import { getDatabase } from '../database';
 import { User, LoginRequest, SignupRequest } from '../types';
 import { logger } from '../utils/logger';
 import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 
 const router = Router();
+
+// Hash password using SHA-256 (minimal improvement — use bcrypt in production)
+function hashPassword(password: string): string {
+  return crypto.createHash('sha256').update(password).digest('hex');
+}
 
 // Register/Signup
 router.post('/signup', (req: Request, res: Response) => {
@@ -14,6 +20,19 @@ router.post('/signup', (req: Request, res: Response) => {
     // Validation
     if (!email || !password || !name) {
       res.status(400).json({ error: 'Email, password, and name are required' });
+      return;
+    }
+
+    // Email format validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(email)) {
+      res.status(400).json({ error: 'Invalid email format' });
+      return;
+    }
+
+    // Password strength validation
+    if (password.length < 8) {
+      res.status(400).json({ error: 'Password must be at least 8 characters' });
       return;
     }
 
@@ -29,14 +48,15 @@ router.post('/signup', (req: Request, res: Response) => {
       return;
     }
 
-    // Create user (password would be hashed in production)
+    // Create user with hashed password
     const userId = uuidv4();
     const token = generateToken();
+    const passwordHash = hashPassword(password);
 
     db.prepare(`
       INSERT INTO users (id, email, password_hash, name, theme)
       VALUES (?, ?, ?, ?, 'dark')
-    `).run(userId, email, password); // TODO: Use bcrypt for real passwords
+    `).run(userId, email, passwordHash, name);
 
     // Create session
     const expiresAt = new Date();
@@ -84,7 +104,13 @@ router.post('/login', (req: Request, res: Response) => {
       return;
     }
 
-    // TODO: Use bcrypt to verify password
+    // Verify password against stored hash
+    const passwordHash = hashPassword(password);
+    if (user.password_hash !== passwordHash) {
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
+    }
+
     const token = generateToken();
     const expiresAt = new Date();
     expiresAt.setHours(expiresAt.getHours() + 24);
@@ -108,10 +134,13 @@ router.post('/login', (req: Request, res: Response) => {
 });
 
 // Get current user
-router.get('/me', (_req: Request, res: Response) => {
+router.get('/me', (req: Request, res: Response) => {
   try {
-    // TODO: Get from auth middleware
-    const userId = 'default-user';
+    const userId = (req as any).userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
     const db = getDatabase();
 
     const user = db
@@ -137,7 +166,11 @@ router.get('/me', (_req: Request, res: Response) => {
 router.patch('/theme', (req: Request, res: Response) => {
   try {
     const { theme } = req.body;
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = (req as any).userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
     const db = getDatabase();
 
     if (!['light', 'dark'].includes(theme)) {
@@ -161,7 +194,7 @@ router.patch('/theme', (req: Request, res: Response) => {
 });
 
 function generateToken(): string {
-  return Math.random().toString(36).substring(2) + Math.random().toString(36).substring(2);
+  return crypto.randomUUID();
 }
 
 export default router;

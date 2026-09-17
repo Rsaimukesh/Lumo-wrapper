@@ -10,8 +10,12 @@ const router = Router();
 router.get('/', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const userId = 'default-user'; // TODO: Get from auth middleware
-    const limit = parseInt(req.query.limit as string) || 10;
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 100);
 
     const tasks = db
       .prepare(`
@@ -63,7 +67,11 @@ router.get('/:taskId', (req: Request, res: Response) => {
 router.post('/', (req: Request, res: Response) => {
   try {
     const { goal, status = 'in-progress' } = req.body;
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
     const db = getDatabase();
 
     if (!goal) {
