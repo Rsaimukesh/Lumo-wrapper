@@ -1006,7 +1006,9 @@ app.on('ready', () => {
           const encrypted = safeStorage.encryptString(key);
           return encrypted.toString('base64');
         }
-        return Buffer.from(key).toString('base64'); // Fallback
+        // When safeStorage is unavailable, warn and still store (degraded security)
+        console.warn('[Lumo] safeStorage unavailable — storing key with OS-level encryption disabled');
+        return Buffer.from(key).toString('base64');
       } catch (err) {
         console.error('[Lumo] Failed to save key securely', err);
         return '';
