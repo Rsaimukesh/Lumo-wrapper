@@ -15,6 +15,43 @@ import { guardedOn, guardedHandle, setZeroTrustMode, isZeroTrustMode } from './i
 import { validateScript } from './agent-guard';
 import { setupMainShortcuts } from '../keybindings/mainShortcuts';
 import { registerImportHandlers } from './browserImporter';
+import { isIPv4 } from 'net';
+
+// ── SSRF Protection Helpers ──────────────────────────────────────────────────
+function isPrivateOrReservedIP(hostname: string): boolean {
+  const privateRanges = [
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^127\./,
+    /^169\.254\./,
+    /^0\./,
+    /^localhost$/i,
+    /^::1$/,
+    /^\[::1\]$/,
+  ];
+  return privateRanges.some((re) => re.test(hostname));
+}
+
+function isSafeUrlForFetch(urlStr: string): { safe: boolean; reason?: string } {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { safe: false, reason: `Blocked protocol: ${parsed.protocol}` };
+    }
+    const hostname = parsed.hostname;
+    if (isPrivateOrReservedIP(hostname)) {
+      return { safe: false, reason: `Blocked private/reserved IP: ${hostname}` };
+    }
+    // Block common cloud metadata endpoints
+    if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
+      return { safe: false, reason: 'Blocked cloud metadata endpoint' };
+    }
+    return { safe: true };
+  } catch {
+    return { safe: false, reason: 'Invalid URL format' };
+  }
+}
 
 // ── Ad Blocker State ──────────────────────────────────────────────────────────
 let adBlockerConfig: AdBlockerConfig = { ...DEFAULT_CONFIG };
@@ -649,6 +686,11 @@ app.on('ready', () => {
 
     // Resolve WHOIS info for domain
     guardedHandle('lumo:resolve-whois', async (_event, { domain }: { domain: string }) => {
+      // Validate domain format — block IPs and suspicious inputs
+      const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+      if (!domain || !domainRegex.test(domain) || isIPv4(domain) || domain.length > 253) {
+        return 'Invalid domain format';
+      }
       const apexDomain = getApexDomain(domain);
       return new Promise<string>((resolve) => {
         const net = require('net');
@@ -691,7 +733,14 @@ app.on('ready', () => {
     // Fetch site security headers
     guardedHandle('lumo:resolve-headers', async (_event, { url }: { url: string }) => {
       try {
-        const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+        const urlCheck = isSafeUrlForFetch(url);
+        if (!urlCheck.safe) {
+          return { error: urlCheck.reason };
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        const response = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+        clearTimeout(timeout);
         const headers: Record<string, string> = {};
         response.headers.forEach((value, key) => {
           headers[key] = value;
@@ -755,13 +804,16 @@ app.on('ready', () => {
           };
         }
 
-        const agent = new https.Agent({ rejectUnauthorized: false });
+        const urlCheck = isSafeUrlForFetch(url);
+        if (!urlCheck.safe) {
+          return { error: urlCheck.reason };
+        }
+
         const response = await axios.get(url, {
           headers: { 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
           },
-          httpsAgent: agent,
           timeout: 4000,
           validateStatus: () => true
         });
