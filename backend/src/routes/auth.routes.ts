@@ -12,6 +12,14 @@ function hashPassword(password: string): string {
   return crypto.createHash('sha256').update(password).digest('hex');
 }
 
+// Constant-time comparison to prevent timing attacks on password hashes
+function verifyPasswordHash(stored: string, supplied: string): boolean {
+  const storedBuf = Buffer.from(stored, 'hex');
+  const suppliedBuf = Buffer.from(supplied, 'hex');
+  if (storedBuf.length !== suppliedBuf.length) return false;
+  return crypto.timingSafeEqual(storedBuf, suppliedBuf);
+}
+
 // Register/Signup
 router.post('/signup', (req: Request, res: Response) => {
   try {
@@ -106,7 +114,7 @@ router.post('/login', (req: Request, res: Response) => {
 
     // Verify password against stored hash
     const passwordHash = hashPassword(password);
-    if (user.password_hash !== passwordHash) {
+    if (!verifyPasswordHash(user.password_hash, passwordHash)) {
       res.status(401).json({ error: 'Invalid credentials' });
       return;
     }
