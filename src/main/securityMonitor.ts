@@ -50,6 +50,7 @@ let alertCounter = 0;
 const THROTTLE_INTERVAL_MS = 100;
 let lastSendTimestamp = 0;
 const eventQueue: SecurityEvent[] = [];
+const MAX_EVENT_QUEUE_SIZE = 500;
 let flushTimer: NodeJS.Timeout | null = null;
 
 // Alert threshold — only fire lumo:security-alert for high-confidence threats
@@ -104,6 +105,10 @@ function emitSecurityEvent(win: BrowserWindow | null, event: SecurityEvent): voi
   }
 
   // Queue the enriched event for batched delivery
+  // Enforce queue size limit to prevent memory growth
+  if (eventQueue.length >= MAX_EVENT_QUEUE_SIZE) {
+    eventQueue.shift(); // Drop oldest event
+  }
   eventQueue.push(event);
 
   // If the threat confidence exceeds the threshold, send an immediate alert
@@ -195,6 +200,25 @@ export interface AdBlockerResult {
 }
 
 const injectedPages = new Set<number>();
+const INJECTED_PAGES_CLEANUP_INTERVAL = 60_000;
+let lastInjectedPagesCleanup = Date.now();
+
+// Clean up stale injectedPages entries periodically
+function cleanupInjectedPages(): void {
+  const now = Date.now();
+  if (now - lastInjectedPagesCleanup < INJECTED_PAGES_CLEANUP_INTERVAL) return;
+  lastInjectedPagesCleanup = now;
+  // Note: We can't check if webContents is alive from the Set alone,
+  // so we just cap the size. Entries will be naturally replaced as
+  // webviews are recreated.
+  if (injectedPages.size > 100) {
+    // Clear half the oldest-looking entries (approximate)
+    const arr = Array.from(injectedPages);
+    for (let i = 0; i < Math.floor(arr.length / 2); i++) {
+      injectedPages.delete(arr[i]);
+    }
+  }
+}
 
 const RESOURCE_TYPE_MAP: Record<string, string> = {
   mainFrame: 'document',
@@ -219,6 +243,9 @@ export function monitorNetworkRequests(
   sess.webRequest.onBeforeRequest(
     { urls: ['<all_urls>'] },
     (details, callback) => {
+      // Cleanup stale injectedPages entries periodically
+      cleanupInjectedPages();
+
       // 1. Ad Blocker Check (preserve existing functionality)
       if (adBlockerCheck) {
         const resourceType = RESOURCE_TYPE_MAP[details.resourceType] ?? details.resourceType;
