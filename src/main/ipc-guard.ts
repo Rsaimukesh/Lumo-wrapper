@@ -2,8 +2,8 @@
  * IPC Guard — origin validation and permission enforcement
  *
  * Wraps every IPC handler with origin/url validation.
- * In normal mode: logs violations but allows.
- * In zero-trust mode: blocks unauthorized calls.
+ * In normal mode: blocks non-main-renderer calls to SENSITIVE/ADMIN channels.
+ * In zero-trust mode: blocks non-main-renderer calls to SESSION/SENSITIVE/ADMIN channels.
  */
 
 import { ipcMain, app } from 'electron';
@@ -60,9 +60,9 @@ const IPC_PERMISSIONS: Record<string, IpcPermission> = {
   'lumo:permission-request': 'PUBLIC',
   'lumo:permission-decision': 'SESSION',
   'lumo:validate-agent-script': 'SESSION',
-  'lumo:vault-get-all': 'SESSION',
-  'lumo:vault-save': 'SESSION',
-  'lumo:vault-delete': 'SESSION',
+  'lumo:vault-get-all': 'SENSITIVE',
+  'lumo:vault-save': 'SENSITIVE',
+  'lumo:vault-delete': 'SENSITIVE',
 };
 
 let zeroTrustMode = false;
@@ -118,7 +118,7 @@ export function setZeroTrustMode(enabled: boolean): void {
 }
 
 function getPermission(channel: string): IpcPermission {
-  return IPC_PERMISSIONS[channel] || 'SESSION';
+  return IPC_PERMISSIONS[channel] || 'SENSITIVE';
 }
 
 function getSenderUrl(event: { senderFrame?: { url: string } }): string | null {
@@ -138,16 +138,26 @@ function checkPermission(
   if (level === 'PUBLIC') return { allowed: true };
 
   const senderUrl = getSenderUrl(event);
+  const senderIsMain = isMainRenderer(senderUrl);
 
-  if (level === 'ADMIN' && zeroTrustMode) {
-    if (!isMainRenderer(senderUrl)) {
+  // ADMIN channels: only main renderer in normal mode, only main renderer in ZT mode
+  if (level === 'ADMIN') {
+    if (!senderIsMain) {
       return { allowed: false, reason: `ADMIN channel '${channel}' called from non-main renderer: ${senderUrl || 'unknown'}` };
     }
   }
 
-  if (level === 'SENSITIVE' && zeroTrustMode) {
-    if (!isMainRenderer(senderUrl)) {
+  // SENSITIVE channels: only main renderer in both modes
+  if (level === 'SENSITIVE') {
+    if (!senderIsMain) {
       return { allowed: false, reason: `SENSITIVE channel '${channel}' called from non-main renderer: ${senderUrl || 'unknown'}` };
+    }
+  }
+
+  // SESSION channels: blocked from non-main renderer in ZT mode only
+  if (level === 'SESSION' && zeroTrustMode) {
+    if (!senderIsMain) {
+      return { allowed: false, reason: `SESSION channel '${channel}' called from non-main renderer in zero-trust mode: ${senderUrl || 'unknown'}` };
     }
   }
 
@@ -166,9 +176,7 @@ export function guardedOn(
     const { allowed, reason } = checkPermission(event, channel);
     if (!allowed) {
       logViolation(channel, reason!);
-      if (zeroTrustMode) {
-        return;
-      }
+      return;
     }
     handler(event, ...args);
   });
@@ -182,9 +190,7 @@ export function guardedHandle(
     const { allowed, reason } = checkPermission(event, channel);
     if (!allowed) {
       logViolation(channel, reason!);
-      if (zeroTrustMode) {
-        throw new Error(`Blocked: ${reason}`);
-      }
+      throw new Error(`Blocked: ${reason}`);
     }
     return handler(event, ...args);
   });
