@@ -516,8 +516,8 @@ async function typeText(
   clearFirst: boolean,
   pressEnter: boolean
 ): Promise<void> {
-  // Step 1 — Focus + set value via JS
-  const escaped = text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n');
+  // Step 1 — Focus + set value via JS (use JSON.stringify for safe string embedding)
+  const safeText = JSON.stringify(text);
   const jsResult: string = await webview.executeJavaScript(
     '(function(){' +
     'var e=window.__LumoAgentElements&&window.__LumoAgentElements[' + elementId + '];' +
@@ -527,7 +527,7 @@ async function typeText(
     'e.el.dispatchEvent(new Event("focus",{bubbles:true}));' +
     (clearFirst ? 'e.el.value="";' : '') +
     'var sel=e.el.value?e.el.value.length:0;' +
-    'e.el.value=\'' + escaped + '\';' +
+    'e.el.value=' + safeText + ';' +
     'e.el.dispatchEvent(new Event("input",{bubbles:true}));' +
     'e.el.dispatchEvent(new Event("change",{bubbles:true}));' +
     (pressEnter
@@ -588,6 +588,17 @@ export async function executeToolCall(
       case 'navigate': {
         let url = args.url || '';
         if (url && !url.startsWith('http')) url = 'https://' + url;
+        // Validate URL — only allow http/https protocols
+        try {
+          const parsed = new URL(url);
+          if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+            output = 'Blocked navigation to non-HTTP protocol: ' + parsed.protocol;
+            break;
+          }
+        } catch {
+          output = 'Invalid URL: ' + url;
+          break;
+        }
         webview.loadURL(url);
         await sleep(3000);
         updatedMemory.visitedUrls = [...updatedMemory.visitedUrls, url];
@@ -699,9 +710,10 @@ export async function executeToolCall(
             'arrowdown': 40, 'arrowup': 38, 'arrowleft': 37, 'arrowright': 39,
           };
           const code = keyCodeMap[keyLower] || 0;
+          const safeKey = JSON.stringify(key);
           await webview.executeJavaScript(
-            'document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:"' + key + '",code:"' + key + '",keyCode:' + code + ',which:' + code + ',bubbles:true}));' +
-            'document.activeElement.dispatchEvent(new KeyboardEvent("keyup",{key:"' + key + '",code:"' + key + '",keyCode:' + code + ',which:' + code + ',bubbles:true}));'
+            'document.activeElement.dispatchEvent(new KeyboardEvent("keydown",{key:' + safeKey + ',code:' + safeKey + ',keyCode:' + code + ',which:' + code + ',bubbles:true}));' +
+            'document.activeElement.dispatchEvent(new KeyboardEvent("keyup",{key:' + safeKey + ',code:' + safeKey + ',keyCode:' + code + ',which:' + code + ',bubbles:true}));'
           );
         }
         await sleep(1000);
@@ -727,13 +739,13 @@ export async function executeToolCall(
 
       // ── Click By Text (fallback) ──────────────────────────────────
       case 'click_by_text': {
-        const searchText = (args.text || '').replace(/'/g, "\\'").toLowerCase().substring(0, 100);
+        const searchText = JSON.stringify((args.text || '').toLowerCase().substring(0, 100));
         const clickResult: string = await webview.executeJavaScript(
           '(function(){' +
           'var candidates=document.querySelectorAll("label,[role=\\"radio\\"],[role=\\"option\\"],li,.answer,.option,.choice,td,th,div,span,p,a,button");' +
           'for(var i=0;i<candidates.length;i++){' +
           'var t=(candidates[i].innerText||"").toLowerCase().trim();' +
-          'if(t.indexOf("' + searchText + '")!==-1&&t.length<300){candidates[i].scrollIntoView({block:"center"});candidates[i].focus();candidates[i].click();return "clicked:"+candidates[i].innerText.trim().substring(0,80);}' +
+          'if(t.indexOf(' + searchText + ')!==-1&&t.length<300){candidates[i].scrollIntoView({block:"center"});candidates[i].focus();candidates[i].click();return "clicked:"+candidates[i].innerText.trim().substring(0,80);}' +
           '}return "not_found";' +
           '})()'
         );
@@ -746,14 +758,14 @@ export async function executeToolCall(
 
       // ── Quiz Answer ───────────────────────────────────────────────
       case 'quiz_answer': {
-        const answerText = (args.answer || '').toLowerCase().replace(/'/g, "\\'");
+        const answerText = JSON.stringify((args.answer || '').toLowerCase());
         const quizResult: string = await webview.executeJavaScript(
           '(function(){' +
           'var result={selected:false,advanced:false,msg:""};' +
           'var candidates=document.querySelectorAll("label,[role=\'radio\'],[role=\'option\'],li,td,.answer,.option,.choice,.a-label,input[type=\'radio\'],input[type=\'checkbox\'],div,span,p,a,button");' +
           'for(var i=0;i<candidates.length;i++){' +
           'var el=candidates[i];var t=(el.innerText||el.textContent||el.value||"").toLowerCase().trim();' +
-          'if(t.indexOf("' + answerText + '")!==-1&&t.length<400){el.scrollIntoView({block:"center"});el.focus();el.click();result.selected=true;result.msg="Selected: "+(el.innerText||el.value||"").trim().substring(0,80);break;}' +
+          'if(t.indexOf(' + answerText + ')!==-1&&t.length<400){el.scrollIntoView({block:"center"});el.focus();el.click();result.selected=true;result.msg="Selected: "+(el.innerText||el.value||"").trim().substring(0,80);break;}' +
           '}' +
           'if(result.selected){' +
           'var btns=document.querySelectorAll("button,input[type=\'submit\'],input[type=\'button\'],a,[role=\'button\']");' +
