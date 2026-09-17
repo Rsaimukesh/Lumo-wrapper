@@ -105,6 +105,10 @@ import { isZeroTrustMode } from './ipc-guard';
 const MALICIOUS_TLD_PATTERNS: string[] = [
   '.zip', '.mov', '.gq', '.click', '.tk', '.ml', '.cf', '.ga',
   '.su', '.top', '.buzz', '.xyz', '.icu', '.rest', '.cam',
+  '.ru', '.cn', '.cc', '.ws', '.work', '.life', '.fun', '.vip',
+  '.today', '.date', '.racing', '.review', '.stream', '.trade',
+  '.webcam', '.win', '.accountant', '.science', '.party', '.faith',
+  '.loan', '.cricket',
 ];
 
 const PHISHING_DOMAIN_PATTERNS: RegExp[] = [
@@ -251,13 +255,13 @@ export function validateUrl(url: string): DetectionResult {
     }
   }
 
-  // 3. Check against phishing domain patterns
+  // 3. Check against phishing domain patterns (test against full URL, not just host)
   for (const pattern of PHISHING_DOMAIN_PATTERNS) {
-    if (pattern.test(host)) {
-      console.log(`[SecurityDetector] Phishing pattern match: ${host}`);
+    if (pattern.test(url)) {
+      console.log(`[SecurityDetector] Phishing pattern match: ${url}`);
       return {
         safe: false,
-        threat: `Phishing domain pattern detected: ${host}`,
+        threat: `Phishing pattern detected in URL: ${host}`,
         confidence: 85,
         category: 'phishing',
         action: 'block',
@@ -268,6 +272,10 @@ export function validateUrl(url: string): DetectionResult {
   // 4. IP-address-only hosts (no domain name)
   const ipv4Pattern = /^(\d{1,3}\.){3}\d{1,3}$/;
   if (ipv4Pattern.test(host)) {
+    // Allow localhost/private IPs (common in development)
+    if (host.startsWith('127.') || host.startsWith('192.168.') || host === '0.0.0.0') {
+      return { safe: true, confidence: 70, category: 'safe', action: 'allow' };
+    }
     console.log(`[SecurityDetector] IP-based host: ${host}`);
     return {
       safe: false,
@@ -446,8 +454,8 @@ export function evaluateClipboardAccess(event: SecurityEvent): DetectionResult {
 
   // Clipboard writeText() — check for crypto wallet address replacement
   if (details.includes('writetext')) {
-    // Extract the content from the details string
-    const contentMatch = event.details.match(/content:\s*"([^"]+)"/);
+    // Extract the content from the details string — handle different quote styles
+    const contentMatch = event.details.match(/content:\s*["']([^"']+)["']/);
     if (contentMatch) {
       const content = contentMatch[1].trim();
 
