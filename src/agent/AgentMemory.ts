@@ -30,7 +30,6 @@ export interface TaskMemory {
   extractedProducts: ExtractedProduct[];
   visitedUrls: string[];
   actionHistory: ActionRecord[];
-  conversationContext: any[];
   requiresConfirmation: boolean;
   confirmationMessage: string;
   errorCount: number;
@@ -48,6 +47,11 @@ export interface ActionRecord {
   stepId: number;
 }
 
+// Memory limits to prevent unbounded growth
+const MAX_ACTION_HISTORY = 50;
+const MAX_VISITED_URLS = 100;
+const MAX_EXTRACTED_PRODUCTS = 50;
+
 export function createTaskMemory(goal: string, vision: boolean = false): TaskMemory {
   return {
     goal,
@@ -56,7 +60,6 @@ export function createTaskMemory(goal: string, vision: boolean = false): TaskMem
     extractedProducts: [],
     visitedUrls: [],
     actionHistory: [],
-    conversationContext: [],
     requiresConfirmation: false,
     confirmationMessage: '',
     errorCount: 0,
@@ -73,18 +76,20 @@ export function addActionToMemory(
   args: Record<string, any>,
   result: string
 ): TaskMemory {
+  const newAction: ActionRecord = {
+    timestamp: Date.now(),
+    tool,
+    args,
+    result,
+    stepId: memory.currentStepIndex,
+  };
+  // Cap action history to prevent memory growth
+  const history = memory.actionHistory.length >= MAX_ACTION_HISTORY
+    ? [...memory.actionHistory.slice(1), newAction]
+    : [...memory.actionHistory, newAction];
   return {
     ...memory,
-    actionHistory: [
-      ...memory.actionHistory,
-      {
-        timestamp: Date.now(),
-        tool,
-        args,
-        result,
-        stepId: memory.currentStepIndex,
-      },
-    ],
+    actionHistory: history,
     lastActionAt: Date.now(),
   };
 }
@@ -98,9 +103,24 @@ export function addProductToMemory(
     (p) => p.name === product.name && p.vendor === product.vendor
   );
   if (exists) return memory;
+  // Cap products to prevent memory growth
+  const products = memory.extractedProducts.length >= MAX_EXTRACTED_PRODUCTS
+    ? [...memory.extractedProducts.slice(1), product]
+    : [...memory.extractedProducts, product];
   return {
     ...memory,
-    extractedProducts: [...memory.extractedProducts, product],
+    extractedProducts: products,
+  };
+}
+
+export function addVisitedUrl(memory: TaskMemory, url: string): TaskMemory {
+  // Cap visited URLs to prevent memory growth
+  const urls = memory.visitedUrls.length >= MAX_VISITED_URLS
+    ? [...memory.visitedUrls.slice(1), url]
+    : [...memory.visitedUrls, url];
+  return {
+    ...memory,
+    visitedUrls: urls,
   };
 }
 

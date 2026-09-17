@@ -130,6 +130,32 @@ export function monitorWasmExecution(reportEvent: ReportSecurityEvent): void {
     const originalInstantiate = WebAssembly.instantiate.bind(WebAssembly);
     const originalInstantiateStreaming =
       WebAssembly.instantiateStreaming?.bind(WebAssembly);
+    const originalCompile = WebAssembly.compile?.bind(WebAssembly);
+    const originalCompileStreaming = WebAssembly.compileStreaming?.bind(WebAssembly);
+
+    const checkWasmSize = (byteLength: number, label: string): boolean => {
+      const sizeKB = byteLength / 1024;
+      if (sizeKB > 1024) {
+        console.warn(`[Lumo Security] Blocked large WebAssembly ${label} (${sizeKB.toFixed(1)}KB).`);
+        reportEvent({
+          type: 'wasm_exec',
+          details: `WebAssembly ${label} blocked — oversized binary (${sizeKB.toFixed(1)}KB) likely crypto miner.`,
+          source: window.location?.href || 'preload',
+          suspicious: true,
+          mitigated: true,
+          timestamp: new Date().toISOString(),
+          detection: {
+            safe: false,
+            threat: `Oversized WebAssembly binary (${(sizeKB / 1024).toFixed(1)}MB) — likely crypto miner`,
+            confidence: 85,
+            category: 'cryptominer',
+            action: 'block',
+          },
+        });
+        return false;
+      }
+      return true;
+    };
 
     WebAssembly.instantiate = async function (
       bufferSource: BufferSource | WebAssembly.Module,
@@ -143,23 +169,7 @@ export function monitorWasmExecution(reportEvent: ReportSecurityEvent): void {
           ? `${sizeKB.toFixed(1)}KB`
           : 'Module';
 
-      if (sizeKB > 1024) {
-        console.warn(`[Lumo Security] Blocked large WebAssembly instantiation (${sizeStr}).`);
-        reportEvent({
-          type: 'wasm_exec',
-          details: `WebAssembly instantiation blocked — oversized binary (${sizeStr}) likely crypto miner.`,
-          source: window.location?.href || 'preload',
-          suspicious: true,
-          mitigated: true,
-          timestamp: new Date().toISOString(),
-          detection: {
-            safe: false,
-            threat: `Oversized WebAssembly binary (${(sizeKB / 1024).toFixed(1)}MB) — likely crypto miner`,
-            confidence: 85,
-            category: 'cryptominer',
-            action: 'block',
-          },
-        });
+      if (sizeKB > 1024 && !checkWasmSize(byteLength, 'instantiate')) {
         return Promise.reject(
           new Error('Lumo Security: WebAssembly execution blocked by active mitigation protocol.'),
         );
@@ -190,6 +200,48 @@ export function monitorWasmExecution(reportEvent: ReportSecurityEvent): void {
         return originalInstantiateStreaming(source, importObject);
       };
     }
+
+    // Hook WebAssembly.compile() to catch pre-compilation of large modules
+    if (originalCompile) {
+      WebAssembly.compile = async function (
+        bufferSource: BufferSource,
+      ): Promise<WebAssembly.Module> {
+        const byteLength =
+          bufferSource instanceof ArrayBuffer ? bufferSource.byteLength : 0;
+        const sizeStr = `${(byteLength / 1024).toFixed(1)}KB`;
+
+        if (!checkWasmSize(byteLength, 'compile')) {
+          return Promise.reject(
+            new Error('Lumo Security: WebAssembly compilation blocked by active mitigation protocol.'),
+          );
+        }
+
+        reportEvent({
+          type: 'wasm_exec',
+          details: `WebAssembly.compile() called — binary size: ${sizeStr}`,
+          source: window.location?.href,
+          suspicious: true,
+          timestamp: new Date().toISOString(),
+        });
+        return originalCompile(bufferSource);
+      } as typeof WebAssembly.compile;
+    }
+
+    // Hook WebAssembly.compileStreaming()
+    if (originalCompileStreaming) {
+      WebAssembly.compileStreaming = async function (
+        source: Response | PromiseLike<Response>,
+      ): Promise<WebAssembly.Module> {
+        reportEvent({
+          type: 'wasm_exec',
+          details: 'WebAssembly.compileStreaming() called — streaming binary compilation',
+          source: window.location?.href,
+          suspicious: true,
+          timestamp: new Date().toISOString(),
+        });
+        return originalCompileStreaming(source);
+      };
+    }
   }
 }
 
@@ -199,6 +251,28 @@ export function observeDOMMutations(reportEvent: ReportSecurityEvent): void {
   const attach = (): void => {
     const observer = new MutationObserver((mutations) => {
       for (const mutation of mutations) {
+        // Monitor attribute changes on security-sensitive attributes
+        if (mutation.type === 'attributes' && mutation.attributeName) {
+          const attr = mutation.attributeName;
+          const target = mutation.target as HTMLElement;
+          const tag = target.tagName?.toLowerCase();
+
+          // Monitor href/src/action attribute changes on links, iframes, forms
+          if (['href', 'src', 'action', 'formaction'].includes(attr)) {
+            const newValue = target.getAttribute(attr);
+            const suspicious = attr === 'href' && newValue?.startsWith('javascript:');
+            if (suspicious) {
+              reportEvent({
+                type: 'dom_mutation',
+                details: `Security-sensitive attribute changed on <${tag}>: ${attr}="${newValue?.substring(0, 100)}"`,
+                source: window.location?.href,
+                suspicious: true,
+                timestamp: new Date().toISOString(),
+              });
+            }
+          }
+        }
+
         for (const node of Array.from(mutation.addedNodes)) {
           if (!(node instanceof HTMLElement)) continue;
 
@@ -251,6 +325,8 @@ export function observeDOMMutations(reportEvent: ReportSecurityEvent): void {
     observer.observe(document.documentElement, {
       childList: true,
       subtree: true,
+      attributes: true,
+      attributeOldValue: false,
     });
   };
 

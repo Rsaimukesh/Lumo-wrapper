@@ -7,10 +7,14 @@ import { v4 as uuidv4 } from 'uuid';
 const router = Router();
 
 // Get home page data for authenticated user
-router.get('/data', (_req: Request, res: Response) => {
+router.get('/data', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
     // Get recent tasks
     const recentTasks = db
@@ -73,7 +77,11 @@ router.post('/action/:actionId/execute', (req: Request, res: Response) => {
   try {
     const db = getDatabase();
     const { actionId } = req.params;
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
     // Get action
     const action = db
@@ -154,7 +162,11 @@ router.post('/workflow/:workflowId/execute', (req: Request, res: Response) => {
 router.post('/search', (req: Request, res: Response) => {
   try {
     const { query } = req.body;
-    const userId = 'default-user'; // TODO: Get from auth middleware
+    const userId = req.userId;
+    if (!userId) {
+      res.status(401).json({ error: 'Unauthorized' });
+      return;
+    }
 
     if (!query) {
       res.status(400).json({ error: 'Query is required' });

@@ -2,8 +2,8 @@
  * Agent Guard — validation layer for AI agent script injection
  *
  * Validates executeJavaScript calls from the agent before they reach the webview.
- * In zero-trust mode, blocks scripts that access Electron internals or use
- * dangerous patterns. In normal mode, logs violations.
+ * Blocks scripts that access Electron internals or use dangerous patterns.
+ * Rate limits script injections per webview.
  */
 
 import { isZeroTrustMode } from './ipc-guard';
@@ -24,6 +24,11 @@ const BLOCKED_PATTERNS: RegExp[] = [
   /node:\w+/,
   /electron\s*\./,
   /remote\s*\./,
+  /window\s*\[\s*['"]require['"]\s*\]/,
+  /globalThis\s*\[\s*['"]require['"]\s*\]/,
+  /self\s*\[\s*['"]require['"]\s*\]/,
+  /window\s*\[\s*['"]process['"]\s*\]/,
+  /globalThis\s*\[\s*['"]process['"]\s*\]/,
 ];
 
 // Patterns that raise suspicion but are not always blocked
@@ -42,7 +47,23 @@ const RATE_LIMIT_WINDOW_MS = 1000;
 const MAX_INJECTIONS_PER_WINDOW = 10;
 const injectionCounts = new Map<string, { count: number; resetTime: number }>();
 
+// Cleanup stale entries every 60 seconds
+const CLEANUP_INTERVAL_MS = 60_000;
+let lastCleanupTime = Date.now();
+
+function cleanupStaleEntries(): void {
+  const now = Date.now();
+  if (now - lastCleanupTime < CLEANUP_INTERVAL_MS) return;
+  lastCleanupTime = now;
+  for (const [key, entry] of injectionCounts) {
+    if (now > entry.resetTime + RATE_LIMIT_WINDOW_MS) {
+      injectionCounts.delete(key);
+    }
+  }
+}
+
 function checkRateLimit(webviewId: string): boolean {
+  cleanupStaleEntries();
   const now = Date.now();
   const entry = injectionCounts.get(webviewId);
 
@@ -59,6 +80,9 @@ function checkRateLimit(webviewId: string): boolean {
   return true;
 }
 
+// Max script size in bytes
+const MAX_SCRIPT_SIZE = 50_000;
+
 export interface AgentGuardResult {
   allowed: boolean;
   reason?: string;
@@ -68,6 +92,13 @@ export interface AgentGuardResult {
 export function validateScript(script: string, webviewLabel?: string): AgentGuardResult {
   if (!script || script.trim().length === 0) {
     return { allowed: false, reason: 'Empty script' };
+  }
+
+  // Enforce script size limit in all modes
+  if (script.length > MAX_SCRIPT_SIZE) {
+    const msg = `Script too large: ${script.length} bytes (max ${MAX_SCRIPT_SIZE})`;
+    console.warn(`${LOG_PREFIX} 🚫 ${msg} ${webviewLabel ? `[${webviewLabel}]` : ''}`);
+    return { allowed: false, reason: msg };
   }
 
   for (const pattern of BLOCKED_PATTERNS) {
@@ -88,17 +119,12 @@ export function validateScript(script: string, webviewLabel?: string): AgentGuar
     }
   }
 
-  if (isZeroTrustMode() && script.length > 50000) {
-    const msg = `Script too large for ZT mode: ${script.length} bytes (max 50000)`;
-    console.warn(`${LOG_PREFIX} 🚫 ${msg}`);
-    return { allowed: false, reason: msg };
-  }
-
   return { allowed: true };
 }
 
 export function checkScriptInjectionRate(webviewId: string): AgentGuardResult {
-  if (isZeroTrustMode() && !checkRateLimit(webviewId)) {
+  // Rate limit in all modes, not just ZT
+  if (!checkRateLimit(webviewId)) {
     return {
       allowed: false,
       reason: `Rate limit exceeded: max ${MAX_INJECTIONS_PER_WINDOW} scripts per ${RATE_LIMIT_WINDOW_MS}ms`,

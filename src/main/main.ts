@@ -15,6 +15,73 @@ import { guardedOn, guardedHandle, setZeroTrustMode, isZeroTrustMode } from './i
 import { validateScript } from './agent-guard';
 import { setupMainShortcuts } from '../keybindings/mainShortcuts';
 import { registerImportHandlers } from './browserImporter';
+import { isIPv4 } from 'net';
+
+// ── SSRF Protection Helpers ──────────────────────────────────────────────────
+function isPrivateOrReservedIP(hostname: string): boolean {
+  const privateRanges = [
+    /^10\./,
+    /^172\.(1[6-9]|2\d|3[01])\./,
+    /^192\.168\./,
+    /^127\./,
+    /^169\.254\./,
+    /^0\./,
+    /^localhost$/i,
+    /^::1$/,
+    /^\[::1\]$/,
+  ];
+  return privateRanges.some((re) => re.test(hostname));
+}
+
+function isSafeUrlForFetch(urlStr: string): { safe: boolean; reason?: string } {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return { safe: false, reason: `Blocked protocol: ${parsed.protocol}` };
+    }
+    const hostname = parsed.hostname;
+    if (isPrivateOrReservedIP(hostname)) {
+      return { safe: false, reason: `Blocked private/reserved IP: ${hostname}` };
+    }
+    // Block common cloud metadata endpoints
+    if (hostname === '169.254.169.254' || hostname === 'metadata.google.internal') {
+      return { safe: false, reason: 'Blocked cloud metadata endpoint' };
+    }
+    return { safe: true };
+  } catch {
+    return { safe: false, reason: 'Invalid URL format' };
+  }
+}
+
+// ── File Path Validation ─────────────────────────────────────────────────────
+const BLOCKED_PATH_PREFIXES = [
+  '/etc', '/proc', '/sys', '/dev',
+  '/boot', '/sbin', '/usr/sbin',
+  'C:\\Windows\\System32', 'C:\\Windows\\SysWOW64',
+  'C:\\Program Files\\',
+];
+
+function isSafeFilePath(filePath: string): { safe: boolean; reason?: string } {
+  const resolved = path.resolve(filePath);
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (resolved.startsWith(prefix)) {
+      return { safe: false, reason: `Access to ${prefix} is restricted` };
+    }
+  }
+  // Block path traversal attempts
+  if (resolved.includes('..')) {
+    return { safe: false, reason: 'Path traversal detected' };
+  }
+  return { safe: true };
+}
+
+function expandTildePath(inputPath: string): string {
+  if (inputPath.startsWith('~')) {
+    const os = require('os');
+    return inputPath.replace(/^~/, os.homedir());
+  }
+  return inputPath;
+}
 
 // ── Ad Blocker State ──────────────────────────────────────────────────────────
 let adBlockerConfig: AdBlockerConfig = { ...DEFAULT_CONFIG };
@@ -435,16 +502,19 @@ app.on('ready', () => {
 
     // Download path + alwaysAsk
     guardedOn('lumo:set-download-path', (_event, { path: dlPath, alwaysAsk }: { path: string; alwaysAsk: boolean }) => {
+      const pathCheck = isSafeFilePath(dlPath);
+      if (!pathCheck.safe) {
+        console.warn(`[Lumo] Blocked set-download-path: ${pathCheck.reason}`);
+        return;
+      }
       const handleDownload = (_event: Electron.Event, item: Electron.DownloadItem) => {
         if (alwaysAsk) {
           // Let Electron show the save dialog (default behavior)
           return;
         }
-        const expanded = dlPath.startsWith('~')
-          ? dlPath.replace('~', require('os').homedir())
-          : dlPath;
+        const expanded = expandTildePath(dlPath);
         const safeName = item.getFilename().replace(/[/\\?%*:|"<>]/g, '-');
-        item.setSavePath(require('path').join(expanded, safeName));
+        item.setSavePath(path.join(expanded, safeName));
       };
       session.defaultSession.removeAllListeners('will-download');
       session.fromPartition('persist:lumo-main').removeAllListeners('will-download');
@@ -520,13 +590,19 @@ app.on('ready', () => {
 
     // Open file with default OS app or locally in Lumo Browser if it is a web-renderable format
     guardedOn('lumo:open-file', (_event, filePath: string) => {
-      const ext = path.extname(filePath).toLowerCase();
+      const pathCheck = isSafeFilePath(filePath);
+      if (!pathCheck.safe) {
+        console.warn(`[Lumo] Blocked open-file: ${pathCheck.reason}`);
+        return;
+      }
+      const resolvedPath = path.resolve(filePath);
+      const ext = path.extname(resolvedPath).toLowerCase();
       const webExtensions = ['.html', '.htm', '.txt', '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.mp3', '.mp4', '.webm', '.ogg', '.wav'];
       
       if (webExtensions.includes(ext)) {
-        mainWindow?.webContents.send('lumo:navigate', `file://${filePath}`);
+        mainWindow?.webContents.send('lumo:navigate', `file://${resolvedPath}`);
       } else {
-        shell.openPath(filePath).catch(err => console.error('[Lumo] open-file failed:', err));
+        shell.openPath(resolvedPath).catch(err => console.error('[Lumo] open-file failed:', err));
       }
     });
 
@@ -649,6 +725,11 @@ app.on('ready', () => {
 
     // Resolve WHOIS info for domain
     guardedHandle('lumo:resolve-whois', async (_event, { domain }: { domain: string }) => {
+      // Validate domain format — block IPs and suspicious inputs
+      const domainRegex = /^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?(\.[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?)*\.[a-zA-Z]{2,}$/;
+      if (!domain || !domainRegex.test(domain) || isIPv4(domain) || domain.length > 253) {
+        return 'Invalid domain format';
+      }
       const apexDomain = getApexDomain(domain);
       return new Promise<string>((resolve) => {
         const net = require('net');
@@ -691,7 +772,14 @@ app.on('ready', () => {
     // Fetch site security headers
     guardedHandle('lumo:resolve-headers', async (_event, { url }: { url: string }) => {
       try {
-        const response = await fetch(url, { method: 'HEAD', redirect: 'follow' });
+        const urlCheck = isSafeUrlForFetch(url);
+        if (!urlCheck.safe) {
+          return { error: urlCheck.reason };
+        }
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 10000);
+        const response = await fetch(url, { method: 'HEAD', redirect: 'follow', signal: controller.signal });
+        clearTimeout(timeout);
         const headers: Record<string, string> = {};
         response.headers.forEach((value, key) => {
           headers[key] = value;
@@ -755,13 +843,16 @@ app.on('ready', () => {
           };
         }
 
-        const agent = new https.Agent({ rejectUnauthorized: false });
+        const urlCheck = isSafeUrlForFetch(url);
+        if (!urlCheck.safe) {
+          return { error: urlCheck.reason };
+        }
+
         const response = await axios.get(url, {
           headers: { 
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8'
           },
-          httpsAgent: agent,
           timeout: 4000,
           validateStatus: () => true
         });
@@ -915,7 +1006,9 @@ app.on('ready', () => {
           const encrypted = safeStorage.encryptString(key);
           return encrypted.toString('base64');
         }
-        return Buffer.from(key).toString('base64'); // Fallback
+        // When safeStorage is unavailable, warn and still store (degraded security)
+        console.warn('[Lumo] safeStorage unavailable — storing key with OS-level encryption disabled');
+        return Buffer.from(key).toString('base64');
       } catch (err) {
         console.error('[Lumo] Failed to save key securely', err);
         return '';

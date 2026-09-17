@@ -5,6 +5,14 @@ enum LogLevel {
   ERROR = 'ERROR',
 }
 
+// Numeric values for correct level comparison
+const LOG_LEVEL_VALUES: Record<LogLevel, number> = {
+  [LogLevel.DEBUG]: 0,
+  [LogLevel.INFO]: 1,
+  [LogLevel.WARN]: 2,
+  [LogLevel.ERROR]: 3,
+};
+
 interface LogEntry {
   timestamp: string;
   level: LogLevel;
@@ -14,9 +22,15 @@ interface LogEntry {
 
 class Logger {
   private logLevel: LogLevel;
+  private logLevelValues: number;
 
   constructor(level: string = process.env.LOG_LEVEL || 'INFO') {
     this.logLevel = (LogLevel as any)[level.toUpperCase()] || LogLevel.INFO;
+    this.logLevelValues = LOG_LEVEL_VALUES[this.logLevel];
+  }
+
+  private shouldLog(level: LogLevel): boolean {
+    return LOG_LEVEL_VALUES[level] >= this.logLevelValues;
   }
 
   private log(level: LogLevel, message: string, data?: unknown): void {
@@ -34,25 +48,25 @@ class Logger {
   }
 
   debug(message: string, data?: unknown): void {
-    if (this.logLevel <= LogLevel.DEBUG) {
+    if (this.shouldLog(LogLevel.DEBUG)) {
       this.log(LogLevel.DEBUG, message, data);
     }
   }
 
   info(message: string, data?: unknown): void {
-    if (this.logLevel <= LogLevel.INFO) {
+    if (this.shouldLog(LogLevel.INFO)) {
       this.log(LogLevel.INFO, message, data);
     }
   }
 
   warn(message: string, data?: unknown): void {
-    if (this.logLevel <= LogLevel.WARN) {
+    if (this.shouldLog(LogLevel.WARN)) {
       this.log(LogLevel.WARN, message, data);
     }
   }
 
   error(message: string, data?: unknown): void {
-    if (this.logLevel <= LogLevel.ERROR) {
+    if (this.shouldLog(LogLevel.ERROR)) {
       this.log(LogLevel.ERROR, message, data);
     }
   }

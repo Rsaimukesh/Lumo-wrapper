@@ -12,12 +12,13 @@ export function getDatabase(): Database.Database {
 }
 
 export async function initializeDatabase(): Promise<void> {
-  const dbPath = process.env.DATABASE_URL || './data/Lumo.db';
+  const dbPath = process.env.DATABASE_PATH || process.env.DATABASE_URL || './data/Lumo.db';
   const fullPath = path.resolve(dbPath);
 
   try {
     db = new Database(fullPath);
     db.pragma('foreign_keys = ON');
+    db.pragma('journal_mode = WAL');
 
     // Create tables
     createTables();
