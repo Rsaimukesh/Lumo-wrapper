@@ -53,6 +53,36 @@ function isSafeUrlForFetch(urlStr: string): { safe: boolean; reason?: string } {
   }
 }
 
+// ── File Path Validation ─────────────────────────────────────────────────────
+const BLOCKED_PATH_PREFIXES = [
+  '/etc', '/proc', '/sys', '/dev',
+  '/boot', '/sbin', '/usr/sbin',
+  'C:\\Windows\\System32', 'C:\\Windows\\SysWOW64',
+  'C:\\Program Files\\',
+];
+
+function isSafeFilePath(filePath: string): { safe: boolean; reason?: string } {
+  const resolved = path.resolve(filePath);
+  for (const prefix of BLOCKED_PATH_PREFIXES) {
+    if (resolved.startsWith(prefix)) {
+      return { safe: false, reason: `Access to ${prefix} is restricted` };
+    }
+  }
+  // Block path traversal attempts
+  if (resolved.includes('..')) {
+    return { safe: false, reason: 'Path traversal detected' };
+  }
+  return { safe: true };
+}
+
+function expandTildePath(inputPath: string): string {
+  if (inputPath.startsWith('~')) {
+    const os = require('os');
+    return inputPath.replace(/^~/, os.homedir());
+  }
+  return inputPath;
+}
+
 // ── Ad Blocker State ──────────────────────────────────────────────────────────
 let adBlockerConfig: AdBlockerConfig = { ...DEFAULT_CONFIG };
 const adBlockerStats = new AdBlockerStats();
@@ -472,16 +502,19 @@ app.on('ready', () => {
 
     // Download path + alwaysAsk
     guardedOn('lumo:set-download-path', (_event, { path: dlPath, alwaysAsk }: { path: string; alwaysAsk: boolean }) => {
+      const pathCheck = isSafeFilePath(dlPath);
+      if (!pathCheck.safe) {
+        console.warn(`[Lumo] Blocked set-download-path: ${pathCheck.reason}`);
+        return;
+      }
       const handleDownload = (_event: Electron.Event, item: Electron.DownloadItem) => {
         if (alwaysAsk) {
           // Let Electron show the save dialog (default behavior)
           return;
         }
-        const expanded = dlPath.startsWith('~')
-          ? dlPath.replace('~', require('os').homedir())
-          : dlPath;
+        const expanded = expandTildePath(dlPath);
         const safeName = item.getFilename().replace(/[/\\?%*:|"<>]/g, '-');
-        item.setSavePath(require('path').join(expanded, safeName));
+        item.setSavePath(path.join(expanded, safeName));
       };
       session.defaultSession.removeAllListeners('will-download');
       session.fromPartition('persist:lumo-main').removeAllListeners('will-download');
@@ -557,13 +590,19 @@ app.on('ready', () => {
 
     // Open file with default OS app or locally in Lumo Browser if it is a web-renderable format
     guardedOn('lumo:open-file', (_event, filePath: string) => {
-      const ext = path.extname(filePath).toLowerCase();
+      const pathCheck = isSafeFilePath(filePath);
+      if (!pathCheck.safe) {
+        console.warn(`[Lumo] Blocked open-file: ${pathCheck.reason}`);
+        return;
+      }
+      const resolvedPath = path.resolve(filePath);
+      const ext = path.extname(resolvedPath).toLowerCase();
       const webExtensions = ['.html', '.htm', '.txt', '.pdf', '.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.mp3', '.mp4', '.webm', '.ogg', '.wav'];
       
       if (webExtensions.includes(ext)) {
-        mainWindow?.webContents.send('lumo:navigate', `file://${filePath}`);
+        mainWindow?.webContents.send('lumo:navigate', `file://${resolvedPath}`);
       } else {
-        shell.openPath(filePath).catch(err => console.error('[Lumo] open-file failed:', err));
+        shell.openPath(resolvedPath).catch(err => console.error('[Lumo] open-file failed:', err));
       }
     });
 
