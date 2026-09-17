@@ -450,6 +450,7 @@ export interface ExecutionResult {
   doneSuccess?: boolean;
   comparisonData?: ExtractedProduct[];
   comparisonRecommendation?: string;
+  blocked?: boolean;
   planSteps?: string[];
 }
 
@@ -570,6 +571,87 @@ async function getElementCoords(webview: any, elementId: number): Promise<{ x: n
   }
 }
 
+// ── Dangerous Action Detection ───────────────────────────────────────────────
+
+const DANGEROUS_ACTION_PATTERNS: RegExp[] = [
+  /\b(place|submit|confirm|complete)\s+(order|purchase|payment)\b/i,
+  /\b(buy|purchase|checkout|pay)\b/i,
+  /\badd\s+to\s+cart\b/i,
+  /\bdelete\s+(account|profile|user)\b/i,
+  /\bchange\s+password\b/i,
+  /\b(send|transfer|wire)\s+(money|funds|payment)\b/i,
+  /\b(cancel|close|terminate)\s+(account|subscription)\b/i,
+  /\b(confirm|authorize)\s+(transfer|payment|transaction)\b/i,
+  /\b(grant|revoke)\s+(access|permission)\b/i,
+  /\b(install|execute)\s+(software|application)\b/i,
+];
+
+const DANGEROUS_URL_PATTERNS: RegExp[] = [
+  /checkout/i,
+  /payment/i,
+  /pay/i,
+  /cart/i,
+  /order/i,
+];
+
+interface DangerousCheckResult {
+  needsConfirmation: boolean;
+  reason?: string;
+}
+
+function checkDangerousAction(toolName: string, args: Record<string, any>): DangerousCheckResult {
+  // Check if the action itself is dangerous
+  if (toolName === 'request_user_confirmation') {
+    return { needsConfirmation: false };
+  }
+
+  // Check navigation to dangerous URLs
+  if (toolName === 'navigate' && args.url) {
+    for (const pattern of DANGEROUS_URL_PATTERNS) {
+      if (pattern.test(args.url)) {
+        return {
+          needsConfirmation: true,
+          reason: `Navigation to potentially dangerous URL detected: ${args.url}`,
+        };
+      }
+    }
+  }
+
+  // Check click actions on potentially dangerous elements
+  if (toolName === 'click_by_text' && args.text) {
+    const text = args.text.toLowerCase();
+    for (const pattern of DANGEROUS_ACTION_PATTERNS) {
+      if (pattern.test(text)) {
+        return {
+          needsConfirmation: true,
+          reason: `Click on dangerous action text detected: "${args.text}"`,
+        };
+      }
+    }
+  }
+
+  // Check type_text for payment/financial data
+  if (toolName === 'type_text' && args.text) {
+    const text = args.text.toLowerCase();
+    // Check for credit card patterns (simplified)
+    if (/\b\d{4}[\s-]?\d{4}[\s-]?\d{4}[\s-]?\d{4}\b/.test(text)) {
+      return {
+        needsConfirmation: true,
+        reason: 'Potential credit card number detected in text input',
+      };
+    }
+    // Check for SSN patterns
+    if (/\b\d{3}-\d{2}-\d{4}\b/.test(text)) {
+      return {
+        needsConfirmation: true,
+        reason: 'Potential SSN detected in text input',
+      };
+    }
+  }
+
+  return { needsConfirmation: false };
+}
+
 // ── Main Executor ──────────────────────────────────────────────────────────
 
 export async function executeToolCall(
@@ -580,6 +662,16 @@ export async function executeToolCall(
 ): Promise<ExecutionResult> {
   let output = '';
   let updatedMemory = { ...memory };
+
+  // Check for dangerous actions that require user confirmation
+  const dangerousCheck = checkDangerousAction(toolName, args);
+  if (dangerousCheck.needsConfirmation) {
+    return {
+      output: `BLOCKED: ${dangerousCheck.reason}. The agent must call request_user_confirmation before this action.`,
+      memory,
+      blocked: true,
+    };
+  }
 
   try {
     switch (toolName) {

@@ -296,4 +296,12 @@ export const DANGEROUS_ACTIONS = [
   'send money',
   'transfer',
   'unsubscribe',
+  'wire transfer',
+  'authorize payment',
+  'confirm transfer',
+  'close account',
+  'revoke access',
+  'install software',
+  'grant permissions',
+  'share credentials',
 ];
