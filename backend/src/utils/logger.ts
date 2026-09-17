@@ -6,7 +6,7 @@ enum LogLevel {
 }
 
 // Numeric values for correct level comparison
-const LOG_LEVEL数值: Record<LogLevel, number> = {
+const LOG_LEVEL_VALUES: Record<LogLevel, number> = {
   [LogLevel.DEBUG]: 0,
   [LogLevel.INFO]: 1,
   [LogLevel.WARN]: 2,
@@ -22,15 +22,15 @@ interface LogEntry {
 
 class Logger {
   private logLevel: LogLevel;
-  private level数值: number;
+  private logLevelValues: number;
 
   constructor(level: string = process.env.LOG_LEVEL || 'INFO') {
     this.logLevel = (LogLevel as any)[level.toUpperCase()] || LogLevel.INFO;
-    this.level数值 = LOG_LEVEL数值[this.logLevel];
+    this.logLevelValues = LOG_LEVEL_VALUES[this.logLevel];
   }
 
   private shouldLog(level: LogLevel): boolean {
-    return LOG_LEVEL数值[level] >= this.level数值;
+    return LOG_LEVEL_VALUES[level] >= this.logLevelValues;
   }
 
   private log(level: LogLevel, message: string, data?: unknown): void {
