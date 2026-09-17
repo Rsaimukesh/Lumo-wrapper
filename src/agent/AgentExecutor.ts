@@ -16,7 +16,7 @@
  */
 
 import type { TaskMemory, ExtractedProduct } from './AgentMemory';
-import { addProductToMemory, addActionToMemory } from './AgentMemory';
+import { addProductToMemory, addActionToMemory, addVisitedUrl } from './AgentMemory';
 
 // ── DOM Extractor (Text Mode — no visual tags) ───────────────────────────
 
@@ -693,7 +693,7 @@ export async function executeToolCall(
         }
         webview.loadURL(url);
         await sleep(3000);
-        updatedMemory.visitedUrls = [...updatedMemory.visitedUrls, url];
+        updatedMemory = addVisitedUrl(updatedMemory, url);
         output = 'Navigated to ' + url;
         break;
       }

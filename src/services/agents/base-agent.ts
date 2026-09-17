@@ -44,10 +44,12 @@ export abstract class BaseAgent {
   protected status: AgentStatus = AgentStatus.IDLE;
   protected messages: AgentMessage[] = [];
   protected context?: AgentContext;
+  private readonly createdAt: string;
 
   constructor(agentId: string, agentType: string) {
     this.logger = Logger.getInstance();
     this.agentId = `${agentType}:${agentId}`;
+    this.createdAt = new Date().toISOString();
   }
 
   /**
@@ -86,11 +88,16 @@ export abstract class BaseAgent {
    * Add a message to the agent's message queue
    */
   protected addMessage(type: AgentMessage['type'], content: string): void {
+    const MAX_MESSAGES = 200;
     this.messages.push({
       type,
       content,
       timestamp: Date.now()
     });
+    // Cap messages to prevent memory growth
+    if (this.messages.length > MAX_MESSAGES) {
+      this.messages = this.messages.slice(-MAX_MESSAGES);
+    }
   }
 
   /**
@@ -102,7 +109,7 @@ export abstract class BaseAgent {
       name: this.agentId,
       type: 'base',
       status: this.status,
-      createdAt: new Date().toISOString()
+      createdAt: this.createdAt
     };
   }
 
@@ -141,6 +148,7 @@ export abstract class BaseAgent {
   public reset(): void {
     this.status = AgentStatus.IDLE;
     this.clearMessages();
+    this.context = undefined;
     this.logger.debug('Agent', `Agent ${this.agentId} reset`, {
       agentId: this.agentId
     });
